@@ -10,6 +10,40 @@ import io
 st.set_page_config(page_title="9215 Dashboard", layout="wide")
 st.image("9215.png", width=150)
 st.title("9215 Dashboard")
+
+st.markdown(
+    """
+    <style>
+    /* Make *all* tabs normal-weight first: */
+    div[data-baseweb="tab"] button[data-baseweb="tab"] {
+        font-weight: 400 !important;
+    }
+    /* Then, specifically target the *first* tab and make it bold: */
+    div[data-baseweb="tab"]:nth-child(1) button[data-baseweb="tab"] {
+        font-weight: 700 !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+tabs = st.tabs(["Summary", "Vehicles", "Ammunition", "Decisions Tool", "History"])
+tab_summary, tab_vehicles, tab_ammo, tab_decisions, tab_history = tabs
+
+with tab_summary:
+    st.write("This is the **Summary** tab, now placed first and in bold.")
+
+with tab_vehicles:
+    st.write("Vehicles tab...")
+
+with tab_ammo:
+    st.write("Ammunition tab...")
+
+with tab_decisions:
+    st.write("Decisions Tool tab...")
+
+with tab_history:
+    st.write("History tab...")
 # ==================== DB & INITIAL SETUP ====================
 
 DB_PATH = Path("tank_battalion.db")
