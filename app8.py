@@ -6,6 +6,10 @@ import pandas as pd
 import plotly.express as px
 import io
 
+
+st.set_page_config(page_title="9215 Dashboard", layout="wide")
+st.image("9215.png", width=150)
+st.title("9215 Dashboard")
 # ==================== DB & INITIAL SETUP ====================
 
 DB_PATH = Path("tank_battalion.db")
@@ -71,11 +75,9 @@ def add_footer():
     st.caption("© 2025 Drishtiy LTD. All Rights Reserved.")
 
 # ==================== STREAMLIT CONFIG & LAYOUT ====================
-st.set_page_config("9215 Dashboard", layout="wide")
 
-# Place the logo at the top (before tabs):
-st.image("9215.png", width=150)
-st.title("9215 Dashboard")
+
+
 
 tabs = st.tabs(["Vehicles", "Ammunition", "Summary", "Decisions Tool", "History"])
 tab_vehicles, tab_ammo, tab_summary, tab_decisions, tab_history = tabs
