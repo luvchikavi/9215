@@ -1,255 +1,350 @@
 import streamlit as st
 import sqlite3
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone # Added timezone
 import pandas as pd
-import plotly.express as px
-import io
+# import plotly.express as px # Not used in the provided snippet, can be removed if not needed later
+# import io # Not used
 
+# ==================== CONSTANTS ====================
+DB_FILENAME = "tank_battalion.db"
+DB_PATH = Path(DB_FILENAME)
 
-st.set_page_config(page_title="9215 Dashboard", layout="wide")
-st.image("9215.png", width=150)
-st.title("9215 Dashboard")
+TABLE_VEHICLES = "vehicles"
+TABLE_VEHICLES_HISTORY = "vehicles_history"
+TABLE_AMMO = "ammo"
+TABLE_AMMO_HISTORY = "ammo_history"
+TABLE_REQUIREMENTS = "requirements"
+TABLE_REQUIREMENTS_HISTORY = "requirements_history"
+
+COL_SIMON = "simon"
+COL_VEHICLE_ID = "vehicle_id"
+COL_PLUGA = "pluga"
+COL_LOCATION = "location"
+COL_Z = "z" # For requirements
+
+STATUS_OPTIONS = ["Working", "Not Working"]
+APP_TITLE = "9215 Dashboard"
+FOOTER_TEXT_MAIN = "**9215 Summary Dashboard | Developed by Dr. Avi Luvchik**"
+FOOTER_TEXT_CAPTION = "© 2025 Drishtiy LTD. All Rights Reserved."
+APP_ICON_PATH = "9215.png"
 
 
 # ==================== DB & INITIAL SETUP ====================
 
-DB_PATH = Path("tank_battalion.db")
-conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+@st.cache_resource # Cache the connection resource
+def init_connection(db_path):
+    """Initializes and returns a SQLite database connection."""
+    return sqlite3.connect(db_path, check_same_thread=False)
 
-def ensure_history_tables(cnx):
-    """
-    Create the history tables if they don't exist yet.
-    They mirror 'vehicles' and 'ammo' structure + 'ts' for timestamps.
-    """
-    cnx.execute("""
-    CREATE TABLE IF NOT EXISTS vehicles_history AS
-    SELECT *, '' as ts FROM vehicles WHERE 0;
-    """)
-    cnx.execute("""
-    CREATE TABLE IF NOT EXISTS ammo_history AS
-    SELECT *, '' as ts FROM ammo WHERE 0;
-    """)
-    cnx.commit()
+conn = init_connection(DB_PATH)
 
-ensure_history_tables(conn)
+def ensure_all_tables(cnx):
+    """Ensures all necessary tables exist in the database."""
+    with cnx: # Use context manager for commits
+        # Create vehicles_history if not exists, based on vehicles schema + ts
+        # This assumes 'vehicles' table is created elsewhere or manually.
+        # If 'vehicles' might not exist, you'd need to define its schema explicitly here.
+        # For robustness, let's define an example schema if 'vehicles' might be missing
+        # For a real scenario, ensure 'vehicles' and 'ammo' tables are pre-populated or created.
+        cnx.execute(f"""
+        CREATE TABLE IF NOT EXISTS {TABLE_VEHICLES} (
+            simon TEXT PRIMARY KEY,
+            pluga TEXT,
+            location TEXT,
+            status TEXT,
+            other_details TEXT
+        );
+        """)
+        cnx.execute(f"""
+        CREATE TABLE IF NOT EXISTS {TABLE_AMMO} (
+            vehicle_id TEXT PRIMARY KEY,
+            hetz INTEGER,
+            barzel INTEGER,
+            regular_556 INTEGER,
+            mag INTEGER,
+            nafetiz60 INTEGER,
+            teura60 INTEGER,
+            meducut INTEGER,
+            calanit INTEGER,
+            halul INTEGER,
+            hatzav INTEGER
+            -- Add other ammo types as needed
+        );
+        """)
 
-@st.cache_data
-def load_data():
-    """
-    Load from vehicles & ammo tables, remove NaNs,
-    cast columns like simon/vehicle_id to strings (no .0).
-    """
-    df_veh = pd.read_sql("SELECT * FROM vehicles", conn).fillna("")
-    df_ammo = pd.read_sql("SELECT * FROM ammo", conn).fillna("")
+        # History tables
+        # Get columns from main tables to create history tables dynamically (safer if main table changes)
+        # Vehicles History
+        cursor = cnx.execute(f"PRAGMA table_info({TABLE_VEHICLES})")
+        vehicle_cols_defs = ", ".join([f"{row[1]} {row[2]}" for row in cursor.fetchall()])
+        if vehicle_cols_defs: # Only if main table exists and has columns
+            cnx.execute(f"""
+            CREATE TABLE IF NOT EXISTS {TABLE_VEHICLES_HISTORY} ({vehicle_cols_defs}, ts TEXT);
+            """)
+        else: # Fallback if vehicles table is empty or doesn't exist (shouldn't happen if above CREATE works)
+             cnx.execute(f"""
+             CREATE TABLE IF NOT EXISTS {TABLE_VEHICLES_HISTORY} (
+                simon TEXT, pluga TEXT, location TEXT, status TEXT, other_details TEXT, ts TEXT
+            );
+            """)
 
-    # Convert certain ID columns from float-like to string (no .0)
-    if "simon" in df_veh.columns:
-        df_veh["simon"] = df_veh["simon"].apply(
-            lambda x: str(int(float(x))) if str(x).replace(".", "").isdigit() else str(x)
+
+        # Ammo History
+        cursor = cnx.execute(f"PRAGMA table_info({TABLE_AMMO})")
+        ammo_cols_defs = ", ".join([f"{row[1]} {row[2]}" for row in cursor.fetchall()])
+        if ammo_cols_defs:
+            cnx.execute(f"""
+            CREATE TABLE IF NOT EXISTS {TABLE_AMMO_HISTORY} ({ammo_cols_defs}, ts TEXT);
+            """)
+        else: # Fallback
+            cnx.execute(f"""
+            CREATE TABLE IF NOT EXISTS {TABLE_AMMO_HISTORY} (
+                vehicle_id TEXT, hetz INTEGER, barzel INTEGER, regular_556 INTEGER, mag INTEGER,
+                nafetiz60 INTEGER, teura60 INTEGER, meducut INTEGER,
+                calanit INTEGER, halul INTEGER, hatzav INTEGER, ts TEXT
+            );
+            """)
+
+        # Requirements tables
+        cnx.execute(f"""
+        CREATE TABLE IF NOT EXISTS {TABLE_REQUIREMENTS} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            {COL_PLUGA} TEXT,
+            {COL_Z} TEXT,
+            commander_note TEXT,
+            last_updated TEXT,
+            UNIQUE({COL_PLUGA}, {COL_Z}) -- Ensure one note per Pluga/Z
         )
-    if "vehicle_id" in df_ammo.columns:
-        df_ammo["vehicle_id"] = df_ammo["vehicle_id"].apply(
-            lambda x: str(int(float(x))) if str(x).replace(".", "").isdigit() else str(x)
+        """)
+        cnx.execute(f"""
+        CREATE TABLE IF NOT EXISTS {TABLE_REQUIREMENTS_HISTORY} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            {COL_PLUGA} TEXT,
+            {COL_Z} TEXT,
+            commander_note TEXT,
+            update_type TEXT,
+            updated_at TEXT,
+            ts TEXT
         )
+        """)
+    # cnx.commit() # commit is handled by 'with cnx:'
 
-    return df_veh, df_ammo
+ensure_all_tables(conn)
 
-def save_with_history(df, table, hist_table, cnx):
-    """
-    Save 'df' into 'table' (replace)
-    and append timestamped snapshot into 'hist_table'.
-    """
-    ts = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+def clean_id_column(series):
+    """Cleans a pandas Series intended to be string IDs, handling potential floats."""
+    def _clean_val(x):
+        if pd.isna(x) or str(x).strip() == "":
+            return ""
+        try:
+            return str(int(float(str(x)))) # Convert to float then int to handle "123.0"
+        except ValueError:
+            return str(x).strip() # Return original (stripped) if not a number
+    return series.apply(_clean_val)
+
+@st.cache_data # Add underscore to connection parameter to indicate it's managed by Streamlit's caching
+def load_data(_cnx):
+    """Loads data from the database into pandas DataFrames."""
+    df_veh = pd.read_sql(f"SELECT * FROM {TABLE_VEHICLES}", _cnx).fillna("")
+    df_ammo = pd.read_sql(f"SELECT * FROM {TABLE_AMMO}", _cnx).fillna("")
+    df_req = pd.read_sql(f"SELECT * FROM {TABLE_REQUIREMENTS}", _cnx).fillna("")
+
+    if COL_SIMON in df_veh.columns:
+        df_veh[COL_SIMON] = clean_id_column(df_veh[COL_SIMON])
+    if COL_VEHICLE_ID in df_ammo.columns:
+        df_ammo[COL_VEHICLE_ID] = clean_id_column(df_ammo[COL_VEHICLE_ID])
+    if COL_Z in df_req.columns: # Assuming 'z' in requirements might also be an ID-like field
+        df_req[COL_Z] = clean_id_column(df_req[COL_Z])
+
+    return df_veh, df_ammo, df_req
+
+veh_df, ammo_df, req_df = load_data(conn)
+
+def save_with_history(df, table_name, history_table_name, cnx):
+    """Saves a DataFrame to a table and appends a copy with a timestamp to a history table."""
+    ts = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
     df_copy = df.copy()
     df_copy["ts"] = ts
+    try:
+        with cnx: # Use context manager for atomic operations
+            df.to_sql(table_name, cnx, if_exists="replace", index=False)
+            df_copy.to_sql(history_table_name, cnx, if_exists="append", index=False)
+        return True, "Data saved successfully and logged in history."
+    except sqlite3.Error as e:
+        return False, f"Database error during save: {e}"
 
-    with cnx:
-        df.to_sql(table, cnx, if_exists="replace", index=False)
-        df_copy.to_sql(hist_table, cnx, if_exists="append", index=False)
-
-veh_df, ammo_df = load_data()
-
-# ==================== FOOTER ====================
 def add_footer():
+    """Adds a common footer to the page."""
     st.markdown("---")
-    st.write("**9215 Summary Dashboard | Developed by Dr. Avi Luvchik**")
-    st.caption("© 2025 Drishtiy LTD. All Rights Reserved.")
+    st.write(FOOTER_TEXT_MAIN)
+    st.caption(FOOTER_TEXT_CAPTION)
 
-# ==================== STREAMLIT CONFIG & LAYOUT ====================
+# ==================== APP LAYOUT ====================
+st.set_page_config(APP_TITLE, layout="wide", initial_sidebar_state="auto")
+try:
+    st.image(APP_ICON_PATH, width=150)
+except Exception:
+    st.warning(f"Could not load app icon from: {APP_ICON_PATH}") # Non-critical error
+st.title(APP_TITLE)
 
+tab_names = ["Vehicles", "Ammunition", "Summary", "Decisions Tool", "History", "Requirements"]
+tabs = st.tabs(tab_names)
+tab_vehicles, tab_ammo, tab_summary, tab_decisions, tab_history, tab_req = tabs
 
-
-
-tabs = st.tabs(["Vehicles", "Ammunition", "Summary", "Decisions Tool", "History"])
-tab_vehicles, tab_ammo, tab_summary, tab_decisions, tab_history = tabs
-
-# ----------------------------------------------------------------
-# TAB 1: VEHICLES (EDITABLE)
-# ----------------------------------------------------------------
+# ==================== TAB 1: VEHICLES (EDITABLE) ====================
 with tab_vehicles:
     st.header("Vehicles (Editable)")
-
     edited_veh = st.data_editor(
         veh_df,
+        column_config={
+            "status": st.column_config.SelectboxColumn(
+                "Status", options=STATUS_OPTIONS, required=True
+            )
+        },
         use_container_width=True,
-        num_rows="dynamic"
+        num_rows="dynamic",
+        key="veh_data_editor" # Unique key
     )
-
-    if st.button("💾 Save vehicle changes"):
-        save_with_history(edited_veh, "vehicles", "vehicles_history", conn)
-        st.cache_data.clear()
-        st.success("Vehicle data saved & logged in history.")
-
+    if st.button("💾 Save Vehicle Changes", key="save_vehicle_button"): # Unique key
+        success, message = save_with_history(edited_veh, TABLE_VEHICLES, TABLE_VEHICLES_HISTORY, conn)
+        if success:
+            st.success(message)
+            st.cache_data.clear() # Clear cache to reload fresh data
+            st.rerun() # Rerun to reflect changes and stay on tab
+        else:
+            st.error(message)
     add_footer()
 
-# ----------------------------------------------------------------
-# TAB 2: AMMUNITION (EDITABLE)
-# ----------------------------------------------------------------
+# ==================== TAB 2: AMMUNITION (EDITABLE) ====================
 with tab_ammo:
     st.header("Ammunition (Editable)")
-
     edited_ammo = st.data_editor(
         ammo_df,
         use_container_width=True,
-        num_rows="dynamic"
+        num_rows="dynamic",
+        key="ammo_data_editor" # Unique key
     )
-
-    if st.button("💾 Save ammo changes"):
-        save_with_history(edited_ammo, "ammo", "ammo_history", conn)
-        st.cache_data.clear()
-        st.success("Ammo data saved & logged in history.")
-
+    if st.button("💾 Save Ammo Changes", key="save_ammo_button"): # Unique key
+        success, message = save_with_history(edited_ammo, TABLE_AMMO, TABLE_AMMO_HISTORY, conn)
+        if success:
+            st.success(message)
+            st.cache_data.clear()
+            st.rerun()
+        else:
+            st.error(message)
     add_footer()
 
-# ----------------------------------------------------------------
-# TAB 3: SUMMARY
-# ----------------------------------------------------------------
+# ==================== TAB 3: SUMMARY ====================
 with tab_summary:
-    st.header("Ammunition & 9215 Overview")
-
-    # ============ 1. Ammo standards ============
+    st.header("Ammunition & Vehicle Overview")
+    # Define standards (these could be configurable or loaded from DB in a more complex app)
     standards = {
-        "hetz": 3,
-        "barzel": 10,
-        "regular_556": 990,
-        "mag": 30,
-        "nafetiz60": 21,
-        "teura60": 9,
-        "meducut": 12
+        "hetz": 3, "barzel": 10, "regular_556": 990, "mag": 30,
+        "nafetiz60": 21, "teura60": 9, "meducut": 12
     }
-    triple = ("calanit", "halul", "hatzav")
-    triple_std = 27
-
-    # ============ 2. Filter controls for ammo shortage ============
+    triple_ammo_types = ("calanit", "halul", "hatzav")
+    triple_ammo_standard = 27 # Combined standard for the triple types
 
     st.subheader("Filter for Ammunition Shortage Table")
-    c1, c2, c3, c4 = st.columns(4)
-    all_plugas = ["All"] + sorted(set(str(x) for x in veh_df["pluga"] if x != ""))
-    all_locs = ["All"] + sorted(set(str(x) for x in veh_df["location"] if x != ""))
-    all_z = ["All"] + sorted(set(str(x) for x in veh_df["simon"] if x != ""))
-    all_types = ["All"] + list(standards.keys()) + ["Calanit+Halul+Hatzav"]
+    col1, col2, col3, col4 = st.columns(4)
 
-    pluga_sel = c1.selectbox("Pluga", all_plugas)
-    loc_sel = c2.selectbox("Location", all_locs)
-    z_sel = c3.selectbox("Tank (Z)", all_z)
-    type_sel = c4.selectbox("Ammo Type", all_types)
+    # Ensure veh_df is not empty before trying to get unique values
+    all_plugas = ["All"] + sorted(list(set(str(x) for x in veh_df[COL_PLUGA] if pd.notna(x) and str(x).strip() != ""))) if not veh_df.empty else ["All"]
+    all_locs = ["All"] + sorted(list(set(str(x) for x in veh_df[COL_LOCATION] if pd.notna(x) and str(x).strip() != ""))) if not veh_df.empty else ["All"]
+    all_z_vehicles = ["All"] + sorted(list(set(str(x) for x in veh_df[COL_SIMON] if pd.notna(x) and str(x).strip() != ""))) if not veh_df.empty else ["All"]
 
-    # Filter vehicles for ammo
-    veh_view = veh_df.copy()
-    if pluga_sel != "All":
-        veh_view = veh_view[veh_view["pluga"] == pluga_sel]
-    if loc_sel != "All":
-        veh_view = veh_view[veh_view["location"] == loc_sel]
-    if z_sel != "All":
-        veh_view = veh_view[veh_view["simon"] == z_sel]
+    all_ammo_types_filter = ["All"] + list(standards.keys()) + ["Calanit+Halul+Hatzav"]
 
-    # Filter ammo
-    tank_ids = veh_view["simon"].tolist()
-    ammo_view = ammo_df[ammo_df["vehicle_id"].isin(tank_ids)].copy()
+    selected_pluga = col1.selectbox("Pluga", all_plugas, key="summary_pluga_filter")
+    selected_loc = col2.selectbox("Location", all_locs, key="summary_loc_filter")
+    selected_z_vehicle = col3.selectbox("Tank (Z)", all_z_vehicles, key="summary_z_filter")
+    selected_ammo_type_filter = col4.selectbox("Ammo Type", all_ammo_types_filter, key="summary_ammo_type_filter")
 
-    # Decide which ammo columns to show
-    if type_sel == "All":
-        show_types = list(standards.keys()) + list(triple)
-    elif type_sel == "Calanit+Halul+Hatzav":
-        show_types = list(triple)
+    # Filter vehicles based on selections
+    veh_view_summary = veh_df.copy()
+    if selected_pluga != "All":
+        veh_view_summary = veh_view_summary[veh_view_summary[COL_PLUGA] == selected_pluga]
+    if selected_loc != "All":
+        veh_view_summary = veh_view_summary[veh_view_summary[COL_LOCATION] == selected_loc]
+    if selected_z_vehicle != "All":
+        veh_view_summary = veh_view_summary[veh_view_summary[COL_SIMON] == selected_z_vehicle]
+
+    tank_ids_for_ammo_view = veh_view_summary[COL_SIMON].tolist()
+    ammo_view_summary = ammo_df[ammo_df[COL_VEHICLE_ID].isin(tank_ids_for_ammo_view)].copy()
+
+    # Determine which ammo types to display columns for
+    ammo_types_to_show_cols = []
+    if selected_ammo_type_filter == "All":
+        ammo_types_to_show_cols.extend(standards.keys())
+        ammo_types_to_show_cols.extend(triple_ammo_types)
+        ammo_types_to_show_cols.append("Calanit+Halul+Hatzav") # Combined display column
+    elif selected_ammo_type_filter == "Calanit+Halul+Hatzav":
+        ammo_types_to_show_cols.extend(triple_ammo_types)
+        ammo_types_to_show_cols.append("Calanit+Halul+Hatzav")
+    elif selected_ammo_type_filter: # Specific type selected
+        ammo_types_to_show_cols.append(selected_ammo_type_filter)
+
+    shortage_display_rows = []
+    shortage_numeric_values = [] # For styling
+
+    base_cols_display = ["Pluga", "Location", "Z"]
+
+    if not ammo_view_summary.empty:
+        for _, ammo_row in ammo_view_summary.iterrows():
+            vehicle_id = ammo_row[COL_VEHICLE_ID]
+            vehicle_match = veh_df[veh_df[COL_SIMON] == vehicle_id]
+
+            # Get Pluga and Location from vehicle_match if available
+            row_pluga = vehicle_match.iloc[0][COL_PLUGA] if not vehicle_match.empty else "N/A"
+            row_loc = vehicle_match.iloc[0][COL_LOCATION] if not vehicle_match.empty else "N/A"
+
+            display_data_for_row = {"Pluga": row_pluga, "Location": row_loc, "Z": vehicle_id}
+            numeric_shortage_for_row = {"Pluga": row_pluga, "Location": row_loc, "Z": vehicle_id}
+
+            # Standard ammo types
+            for ammo_col, std_val in standards.items():
+                current_ammo_val = float(ammo_row.get(ammo_col, 0)) if str(ammo_row.get(ammo_col, "")).strip() != "" else 0
+                shortage = max(std_val - current_ammo_val, 0)
+                display_data_for_row[ammo_col] = f"{int(current_ammo_val)}({int(shortage)})" if shortage > 0 else f"{int(current_ammo_val)}"
+                numeric_shortage_for_row[ammo_col] = shortage
+
+            # Triple ammo types (Calanit, Halul, Hatzav)
+            current_triple_total = 0
+            individual_triple_values = {}
+            for t_type in triple_ammo_types:
+                val = float(ammo_row.get(t_type, 0)) if str(ammo_row.get(t_type, "")).strip() != "" else 0
+                current_triple_total += val
+                individual_triple_values[t_type] = val
+
+            triple_shortage = max(triple_ammo_standard - current_triple_total, 0)
+            for t_type in triple_ammo_types: # Display individual triple types
+                display_data_for_row[t_type] = f"{int(individual_triple_values[t_type])}({int(triple_shortage)})" if triple_shortage > 0 else f"{int(individual_triple_values[t_type])}"
+                numeric_shortage_for_row[t_type] = triple_shortage # Shortage is for the group
+
+            # Combined display for triple types
+            combined_triple_display_name = "Calanit+Halul+Hatzav"
+            display_data_for_row[combined_triple_display_name] = f"{int(current_triple_total)}({int(triple_shortage)})" if triple_shortage > 0 else f"{int(current_triple_total)}"
+            numeric_shortage_for_row[combined_triple_display_name] = triple_shortage
+
+            shortage_display_rows.append(display_data_for_row)
+            shortage_numeric_values.append(numeric_shortage_for_row)
+
+    if not shortage_display_rows:
+        shortage_display_df = pd.DataFrame(columns=base_cols_display + [col for col in ammo_types_to_show_cols if col in standards or col in triple_ammo_types or col == "Calanit+Halul+Hatzav"])
+        shortage_numeric_df_for_style = pd.DataFrame(columns=shortage_display_df.columns)
     else:
-        show_types = [type_sel] if type_sel else []
+        shortage_display_df = pd.DataFrame(shortage_display_rows)
+        shortage_numeric_df_for_style = pd.DataFrame(shortage_numeric_values)
 
-    # ============ 3. Ammunition Shortage Table (with current & shortage) ============
+    # Filter columns to display based on selection and availability
+    final_display_cols = base_cols_display + [col for col in ammo_types_to_show_cols if col in shortage_display_df.columns]
+    final_display_cols = sorted(list(set(final_display_cols)), key=lambda x: (x not in base_cols_display, x)) # Keep base cols first
 
-    st.subheader("Ammunition Shortage Table")
+    shortage_display_df = shortage_display_df[final_display_cols] if not shortage_display_df.empty and final_display_cols else pd.DataFrame(columns=base_cols_display)
 
-    shortage_rows = []
-    shortage_numeric_rows = []
 
-    for _, row in ammo_view.iterrows():
-        sid = row["vehicle_id"]
-        vmatch = veh_df[veh_df["simon"] == sid]
-        row_pluga = row.get("pluga", "")
-        row_loc = row.get("location", "")
-        if row_pluga == "" and not vmatch.empty:
-            row_pluga = vmatch.iloc[0]["pluga"]
-        if row_loc == "" and not vmatch.empty:
-            row_loc = vmatch.iloc[0]["location"]
-
-        # For display
-        disp = {"Pluga": row_pluga, "Location": row_loc, "Z": sid}
-        shrt = {"Pluga": row_pluga, "Location": row_loc, "Z": sid}
-
-        # Single-type
-        for c in standards:
-            have = float(row[c]) if c in row and row[c] not in ["", None] else 0
-            need = standards[c]
-            short = max(need - have, 0)
-            if short > 0:
-                disp[c] = f"{int(have)}({int(short)})"
-            else:
-                disp[c] = f"{int(have)}"
-            shrt[c] = short
-
-        # Triple
-        triple_val = 0
-        tvals = {}
-        for t in triple:
-            cur = float(row[t]) if t in row and row[t] not in ["", None] else 0
-            triple_val += cur
-            tvals[t] = cur
-        triple_short = max(triple_std - triple_val, 0)
-        for t in triple:
-            if triple_short > 0:
-                disp[t] = f"{int(tvals[t])}({int(triple_short)})"
-            else:
-                disp[t] = f"{int(tvals[t])}"
-            shrt[t] = triple_short
-
-        # Combined column if relevant
-        if "Calanit+Halul+Hatzav" in (show_types + ["Calanit+Halul+Hatzav"]):
-            if triple_short > 0:
-                disp["Calanit+Halul+Hatzav"] = f"{int(triple_val)}({int(triple_short)})"
-            else:
-                disp["Calanit+Halul+Hatzav"] = f"{int(triple_val)}"
-            shrt["Calanit+Halul+Hatzav"] = triple_short
-
-        shortage_rows.append(disp)
-        shortage_numeric_rows.append(shrt)
-
-    shortage_disp_df = pd.DataFrame(shortage_rows)
-    shortage_num_df = pd.DataFrame(shortage_numeric_rows)
-
-    base_cols = ["Pluga", "Location", "Z"]
-    disp_cols = base_cols + sorted(set(show_types))
-    if (
-        "Calanit+Halul+Hatzav" in shortage_disp_df.columns
-        and (type_sel == "All" or type_sel == "Calanit+Halul+Hatzav")
-    ):
-        disp_cols.append("Calanit+Halul+Hatzav")
-    disp_cols = [c for c in disp_cols if c in shortage_disp_df.columns]
-
-    shortage_disp_df = shortage_disp_df[disp_cols] if not shortage_disp_df.empty else pd.DataFrame()
-    shortage_num_df = shortage_num_df[disp_cols] if not shortage_num_df.empty else pd.DataFrame()
-
-    if not shortage_disp_df.empty:
+    if not shortage_display_df.empty:
         st.markdown(
             "<span style='display:inline-block; width:18px; height:18px; background:#d4f8d4;"
             "border:1px solid #999;'></span> **Meets standard** &nbsp;&nbsp;"
@@ -258,430 +353,197 @@ with tab_summary:
             unsafe_allow_html=True
         )
 
-        def highlight_shortage(data):
-            color_map = pd.DataFrame("", index=data.index, columns=data.columns)
-            for col in disp_cols:
-                if col not in base_cols:
-                    for i in data.index:
-                        short_val = shortage_num_df.loc[i, col]
-                        try:
-                            valf = float(short_val)
-                            if valf > 0:
-                                color_map.loc[i, col] = "background-color: #ffb3b3"
-                            else:
-                                color_map.loc[i, col] = "background-color: #d4f8d4"
-                        except:
-                            pass
-            return color_map
+        def highlight_shortage_style(data_df_to_style):
+            style_df = pd.DataFrame('', index=data_df_to_style.index, columns=data_df_to_style.columns)
+            if shortage_numeric_df_for_style.empty or data_df_to_style.empty: # or not same index
+                 return style_df
+            # Ensure indices match if they are not already (can happen if filtering changes things)
+            # This part might need adjustment if data_df_to_style has a different index than shortage_numeric_df_for_style
+            # For simplicity, assuming they align based on prior logic.
 
-        sty = shortage_disp_df.style.apply(highlight_shortage, axis=None)
-        st.dataframe(sty, use_container_width=True)
+            for col_name in data_df_to_style.columns:
+                if col_name not in base_cols_display and col_name in shortage_numeric_df_for_style.columns:
+                    for idx in data_df_to_style.index:
+                        if idx in shortage_numeric_df_for_style.index: # Check if index exists in numeric df
+                            short_val = shortage_numeric_df_for_style.loc[idx, col_name]
+                            try:
+                                if float(short_val) > 0:
+                                    style_df.loc[idx, col_name] = 'background-color: #ffb3b3' # Light Red
+                                else:
+                                    style_df.loc[idx, col_name] = 'background-color: #d4f8d4' # Light Green
+                            except (ValueError, TypeError):
+                                pass # Non-numeric shortage value, no style
+            return style_df
+
+        styled_shortage_df = shortage_display_df.style.apply(highlight_shortage_style, axis=None)
+        st.dataframe(styled_shortage_df, use_container_width=True)
     else:
-        st.info("No shortage data under these filters.")
-
-    # ============ 4. Quick shortage percentage table ============
-    st.markdown("---")
-    st.subheader("Quick Overview of Shortage in % by Ammo Type")
-
-    n_tanks = len(veh_view)
-    if n_tanks > 0:
-        summary_data = []
-        for c in standards:
-            col_current = ammo_view[c].replace("", 0).astype(float).sum() if c in ammo_view.columns else 0
-            col_need = standards[c] * n_tanks
-            col_short = max(col_need - col_current, 0)
-            short_percent = 0 if col_need == 0 else (col_short / col_need) * 100
-            summary_data.append({
-                "Type": c,
-                "Current": int(col_current),
-                "Standard": int(col_need),
-                "Shortage": int(col_short),
-                "Shortage%": f"{short_percent:.1f}%"
-            })
-        # triple
-        sum_triple = 0
-        for _, row in ammo_view.iterrows():
-            tv = 0.0
-            for t in triple:
-                if t in row and row[t] not in ["", None]:
-                    tv += float(row[t])
-            sum_triple += tv
-        need_triple = triple_std * n_tanks
-        short_triple = max(need_triple - sum_triple, 0)
-        shortp_triple = 0 if need_triple == 0 else (short_triple / need_triple) * 100
-        summary_data.append({
-            "Type": "Calanit+Halul+Hatzav",
-            "Current": int(sum_triple),
-            "Standard": int(need_triple),
-            "Shortage": int(short_triple),
-            "Shortage%": f"{shortp_triple:.1f}%"
-        })
-
-        short_summary_df = pd.DataFrame(summary_data)
-        st.dataframe(short_summary_df.style.format(precision=0), use_container_width=True)
-    else:
-        st.info("No tanks in the filter to compute shortage%.")
-
-    # ============ 5. 9215 Totals vs. Standards (bar chart), scale regular_556 ============
-    st.markdown("---")
-    st.subheader("9215 Totals vs. Standards")
-
-    if n_tanks > 0:
-        # compute current totals
-        cur_map = {}
-        for c in standards:
-            if c in ammo_view.columns:
-                total_val = ammo_view[c].replace("", 0).astype(float).sum()
-                cur_map[c] = total_val
-        # triple
-        total_triple = 0
-        for _, row in ammo_view.iterrows():
-            val_sum = 0
-            for t in triple:
-                if t in row and row[t] not in ["", None]:
-                    val_sum += float(row[t])
-            total_triple += val_sum
-        cur_map["Calanit+Halul+Hatzav"] = total_triple
-
-        # standards
-        std_map = {}
-        for c in standards:
-            std_map[c] = standards[c] * n_tanks
-        std_map["Calanit+Halul+Hatzav"] = triple_std * n_tanks
-
-        # scale regular_556
-        chart_keys = list(cur_map.keys())
-        chart_cur = {}
-        chart_std = {}
-        for k in chart_keys:
-            if k == "regular_556":
-                newk = "regular_556 (x1000)"
-                chart_cur[newk] = cur_map[k] / 1000
-                chart_std[newk] = std_map[k] / 1000
-            else:
-                chart_cur[k] = cur_map[k]
-                chart_std[k] = std_map[k]
-
-        chart_df = pd.DataFrame({
-            "Ammo Type": list(chart_cur.keys()),
-            "Current": list(chart_cur.values()),
-            "Standard": [chart_std[x] for x in chart_cur.keys()]
-        })
-        fig_batt = px.bar(
-            chart_df, x="Ammo Type", y=["Current","Standard"],
-            barmode="group", title="9215: Current vs Standard"
-        )
-        st.plotly_chart(fig_batt, use_container_width=True)
-    else:
-        st.info("No data to aggregate (zero tanks match your filters).")
-
-    # ============ 6. Vehicles Condition Table (like ammo) ============
-
-    st.markdown("---")
-    st.subheader("Vehicles Condition Table")
-
-    # Filters for vehicles
-    # If your table has 'category' col, we filter by it:
-    all_types = ["All"] + sorted(set(str(x) for x in veh_df["vehicle_type"] if x != ""))
-    col_loc, col_pluga, col_vtype = st.columns(3)
-    loc_v = col_loc.selectbox("Location (Veh)", all_locs, key="v_loc")
-    pluga_v = col_pluga.selectbox("Pluga (Veh)", all_plugas, key="v_pluga")
-    vtype_v = col_vtype.selectbox("Vehicle Type", all_types, key="v_vehicle_type")
-
-    vehicle_view_df = veh_df.copy()
-    if loc_v != "All":
-        vehicle_view_df = vehicle_view_df[vehicle_view_df["location"] == loc_v]
-    if pluga_v != "All":
-        vehicle_view_df = vehicle_view_df[vehicle_view_df["pluga"] == pluga_v]
-    if vtype_v != "All":
-        vehicle_view_df = vehicle_view_df[vehicle_view_df["vehicle_type"] == vtype_v]
-
-    # Then we color-code the 'status' column green/red as before:
-    def highlight_vehicle_status(row):
-        status_val = row.get("status", "").strip().lower()
-        if status_val == "working":
-            return "background-color: #d4f8d4"
-        elif status_val == "not working":
-            return "background-color: #ffb3b3"
-        return ""
-
-    if not vehicle_view_df.empty:
-        sty_veh = vehicle_view_df.style.apply(
-            lambda s: [highlight_vehicle_status(s) if col=="status" else "" for col in s.index],
-            axis=1
-        )
-        st.dataframe(sty_veh.format(precision=0), use_container_width=True)
-    else:
-        st.info("No vehicles match these filters.")
-
-    # Quick overview by vehicle_type
-    st.subheader("Quick Overview of Working / Not Working by Vehicle Type")
-    if "vehicle_type" in veh_df.columns:
-        if not vehicle_view_df.empty:
-            group_df = vehicle_view_df.copy()
-            summaries = []
-            for vt in group_df["vehicle_type"].unique():
-                sub = group_df[group_df["vehicle_type"] == vt]
-                working_count = sub["status"].str.lower().eq("working").sum()
-                not_working_count = sub["status"].str.lower().eq("not working").sum()
-                summaries.append({
-                    "Vehicle Type": vt,
-                    "Working": working_count,
-                    "Not Working": not_working_count,
-                    "Total": len(sub)
-                })
-            sum_df = pd.DataFrame(summaries)
-            st.dataframe(sum_df.style.format(precision=0), use_container_width=True)
-        else:
-            st.write("No vehicles to summarize in this filter.")
-    else:
-        st.info("No 'vehicle_type' column found in vehicles. Please adjust the code if needed.")
-
-    # ============ 7. Download shortage & maybe vehicles? ============
-
-    st.markdown("---")
-    st.subheader("Download Ammo Shortage to Excel")
-    if not shortage_disp_df.empty:
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
-            shortage_disp_df.to_excel(writer, sheet_name="Shortage", index=False)
-            writer.close()
-        st.download_button(
-            label="Download Shortage as Excel",
-            data=buffer.getvalue(),
-            file_name="shortage.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-    else:
-        st.info("No shortage data to download.")
+        st.info("No ammunition data to display based on current filters, or all vehicles meet standards for selected ammo.")
 
     add_footer()
 
-# ----------------------------------------------------------------
-# TAB 4: DECISIONS TOOL
-# ----------------------------------------------------------------
+# ==================== TAB 4: DECISIONS TOOL ====================
 with tab_decisions:
-    st.header("Decisions Tool: Scenario Planning & Predictive Analysis")
-
-    st.write("""
-        As the manager of 9215, use this tool to forecast both **ammunition usage** and **vehicle availability** 
-        to make informed decisions about future operations, maintenance schedules, or resource ordering.
-    """)
-
-    # -------------------------------------------------------------
-    # 1. Ammunition Scenario - same as before
-    # -------------------------------------------------------------
-    st.subheader("Ammunition Scenario: Days to Depletion")
-
-    standards = {
-        "hetz": 3,
-        "barzel": 10,
-        "regular_556": 990,
-        "mag": 30,
-        "nafetiz60": 21,
-        "teura60": 9,
-        "meducut": 12
-    }
-    triple = ("calanit", "halul", "hatzav")
-
-    relevant_ammo_types = sorted(set(list(standards.keys()) + list(triple)))
-
-    # Daily usage table
-    usage_data = []
-    for ammo_type in relevant_ammo_types:
-        usage_data.append({"Ammo Type": ammo_type, "Daily Usage": 0})
-    usage_df = pd.DataFrame(usage_data)
-    usage_edit = st.data_editor(usage_df, num_rows="fixed", use_container_width=True, key="ammo_usage_editor")
-
-    # Summation of current ammo across *all* vehicles
-    totals_map = {}
-    for ammo_type in relevant_ammo_types:
-        if ammo_type in ammo_df.columns:
-            sum_val = ammo_df[ammo_type].replace("",0).astype(float).sum()
-        else:
-            sum_val = 0
-        totals_map[ammo_type] = sum_val
-
-    analysis_rows = []
-    for _, row in usage_edit.iterrows():
-        atype = row["Ammo Type"]
-        use_rate = row["Daily Usage"]
-        current_total = totals_map.get(atype, 0)
-        # if daily usage=0 => infinite
-        if use_rate > 0:
-            days_left = current_total / use_rate
-        else:
-            days_left = 9999999
-        analysis_rows.append({
-            "Ammo Type": atype,
-            "Current Total": int(current_total),
-            "Daily Usage": float(use_rate),
-            "Days to Run Out": round(days_left, 1) if days_left < 9999999 else "∞"
-        })
-    scenario_df = pd.DataFrame(analysis_rows)
-
-    def days_color(val):
-        if val == "∞":
-            return "background-color: #d4f8d4"  # green
-        try:
-            v = float(val)
-        except:
-            return ""
-        if v < 30:
-            return "background-color: #ff9999"  # red
-        elif v < 90:
-            return "background-color: #ffff99"  # yellow
-        else:
-            return "background-color: #d4f8d4"   # green
-
-    sty_scenario = scenario_df.style.format(
-        subset=["Daily Usage", "Current Total"], precision=0
-    ).map(days_color, subset=["Days to Run Out"])
-
-    st.dataframe(sty_scenario, use_container_width=True)
-    st.write("""
-        **Interpretation**: 
-        - Red: ammo type will run out within 30 days at given usage.
-        - Yellow: runs out within 3 months.
-        - Green: stable or no usage.
-    """)
-
-    st.markdown("---")
-
-    # -------------------------------------------------------------
-    # 2. Vehicles Scenario - e.g. usage hours, next maintenance
-    # -------------------------------------------------------------
-    st.subheader("Vehicles Scenario: Maintenance/Availability Forecast")
-
-    st.write("""
-        Enter the expected **daily usage hours** for each vehicle or a subset, 
-        and an estimate of **hours until next maintenance**. 
-        The tool will highlight vehicles close to a required maintenance threshold.
-    """)
-
-    # We can store "hours_left" or "maintenance_threshold" in the vehicles DB, or just do a scenario here.
-    # For demonstration, let's let the user pick a subset of vehicles, 
-    # then manually input "hours_to_maintenance" and "daily_usage" for each, 
-    # and compute "days_until_maintenance".
-    vcols = ["simon","status","category","location","hours_to_maintenance","daily_usage"]
-    # We'll build a small scenario df from the vehicles table
-    # Each vehicle might have an integer hours_to_maintenance. If not, we'll set 100 as default.
-    # daily_usage default = 0
-
-    scen_rows = []
-    for _, vrow in veh_df.iterrows():
-        scen_rows.append({
-            "Z": vrow["simon"],
-            "Status": vrow.get("status",""),
-            "Category": vrow.get("category",""),
-            "Location": vrow.get("location",""),
-            # We'll assume hours_to_maintenance not in DB, so default to 100
-            "Hours to Maintenance": 100,
-            # daily usage default 0
-            "Daily Usage (hrs)": 0
-        })
-    scen_veh_df = pd.DataFrame(scen_rows)
-
-    st.write("#### Select Vehicles & Specify Hours to Maintenance / Daily Usage")
-    edited_veh_scenario = st.data_editor(
-        scen_veh_df,
-        num_rows="dynamic",
-        use_container_width=True,
-        key="veh_scenario_data"
-    )
-
-    # Next, compute "days until maintenance" = Hours to Maintenance / Daily Usage(hrs).
-    # If usage=0 => infinite. We'll color code.
-    comp_rows = []
-    for _, row in edited_veh_scenario.iterrows():
-        z = row["Z"]
-        hours_left = row["Hours to Maintenance"]
-        daily_use = row["Daily Usage (hrs)"]
-        if isinstance(hours_left, str) and hours_left.isdigit():
-            hours_left = float(hours_left)
-        elif not isinstance(hours_left, (int,float)):
-            hours_left = 100.0
-        if isinstance(daily_use, str) and daily_use.isdigit():
-            daily_use = float(daily_use)
-        elif not isinstance(daily_use, (int,float)):
-            daily_use = 0.0
-
-        if daily_use > 0:
-            days_left = round(hours_left / daily_use, 1)
-        else:
-            days_left = "∞"
-
-        comp_rows.append({
-            "Z": z,
-            "Status": row["Status"],
-            "Category": row["Category"],
-            "Location": row["Location"],
-            "Hours to Maintenance": hours_left,
-            "Daily Usage (hrs)": daily_use,
-            "Days Until Maintenance": days_left
-        })
-    comp_veh_df = pd.DataFrame(comp_rows)
-
-    # Color code if "days until maintenance" < 5 => red, < 15 => yellow, else green
-    def maintenance_color(val):
-        if val == "∞":
-            return "background-color: #d4f8d4"
-        try:
-            v = float(val)
-        except:
-            return ""
-        if v < 5:
-            return "background-color: #ff9999"
-        elif v < 15:
-            return "background-color: #ffff99"
-        else:
-            return "background-color: #d4f8d4"
-
-    sty_veh_scenario = comp_veh_df.style.format(
-        subset=["Hours to Maintenance","Daily Usage (hrs)"], precision=0
-    ).map(maintenance_color, subset=["Days Until Maintenance"])
-
-    st.dataframe(sty_veh_scenario, use_container_width=True)
-
-    st.write("""
-        **Interpretation**:
-        - Red: Vehicle due for maintenance within 5 days at the current usage rate.
-        - Yellow: Due within 15 days.
-        - Green: Safe for more than 15 days or infinite usage if 0 daily usage.
-    """)
-
+    st.header("Decisions Tool - Concept")
+    st.info("This section is planned for future development. It could include features like:"
+            "\n- Simulating ammo redistribution."
+            "\n- Prioritizing vehicle repairs based on mission needs."
+            "\n- Scenario planning for different operational requirements.")
+    # Add any interactive elements with unique keys if developed
     add_footer()
 
-# ----------------------------------------------------------------
-# TAB 5: HISTORY
-# ----------------------------------------------------------------
+# ==================== TAB 5: HISTORY ====================
 with tab_history:
     st.header("History: View Past Snapshots")
 
-    hist_veh = pd.read_sql("SELECT DISTINCT ts FROM vehicles_history ORDER BY ts DESC", conn)["ts"].tolist()
-    hist_ammo = pd.read_sql("SELECT DISTINCT ts FROM ammo_history ORDER BY ts DESC", conn)["ts"].tolist()
-    hist_ts = sorted(list(set(hist_veh) & set(hist_ammo)), reverse=True)
+    # Fetch distinct timestamps from all relevant history tables
+    ts_veh_hist = pd.read_sql(f"SELECT DISTINCT ts FROM {TABLE_VEHICLES_HISTORY} ORDER BY ts DESC", conn)["ts"].tolist()
+    ts_ammo_hist = pd.read_sql(f"SELECT DISTINCT ts FROM {TABLE_AMMO_HISTORY} ORDER BY ts DESC", conn)["ts"].tolist()
+    ts_req_hist_main = pd.read_sql(f"SELECT DISTINCT ts FROM {TABLE_REQUIREMENTS_HISTORY} ORDER BY ts DESC", conn)["ts"].tolist()
 
-    if not hist_ts:
-        st.info("No history data found. Please save Vehicles/Ammo at least once.")
+    # Combine and sort all unique timestamps
+    all_hist_ts = sorted(list(set(ts_veh_hist) | set(ts_ammo_hist) | set(ts_req_hist_main)), reverse=True)
+
+    if not all_hist_ts:
+        st.info("No history data found. Please save data in other tabs to populate history.")
     else:
-        chosen_ts = st.selectbox("Select snapshot time", hist_ts)
-        df_veh_hist = pd.read_sql("SELECT * FROM vehicles_history WHERE ts=?", conn, params=[chosen_ts])
-        df_ammo_hist = pd.read_sql("SELECT * FROM ammo_history WHERE ts=?", conn, params=[chosen_ts])
+        chosen_ts = st.selectbox("Select Snapshot Time (UTC)", all_hist_ts, key="history_ts_selector")
 
-        for df_h in [df_veh_hist, df_ammo_hist]:
-            if "ts" in df_h.columns:
-                df_h.drop(columns="ts", inplace=True, errors="ignore")
-            for col in ["simon", "vehicle_id"]:
-                if col in df_h.columns:
-                    df_h[col] = df_h[col].apply(
-                        lambda x: str(int(float(x))) if str(x).replace(".","").isdigit() else str(x)
-                    )
+        if chosen_ts:
+            st.subheader(f"Snapshot at: {chosen_ts} UTC")
 
-        st.subheader("Vehicles Snapshot")
-        st.dataframe(df_veh_hist.style.format(precision=0), use_container_width=True)
+            # Vehicles Snapshot
+            if chosen_ts in ts_veh_hist:
+                df_veh_hist_snap = pd.read_sql(f"SELECT * FROM {TABLE_VEHICLES_HISTORY} WHERE ts=?", conn, params=(chosen_ts,))
+                if "ts" in df_veh_hist_snap.columns: df_veh_hist_snap.drop(columns="ts", inplace=True)
+                if COL_SIMON in df_veh_hist_snap.columns:
+                    df_veh_hist_snap[COL_SIMON] = clean_id_column(df_veh_hist_snap[COL_SIMON])
+                st.markdown("#### Vehicles Snapshot")
+                st.dataframe(df_veh_hist_snap.style.format(precision=0), use_container_width=True)
+            else:
+                st.markdown("#### Vehicles Snapshot")
+                st.caption(f"No vehicle data saved at {chosen_ts} UTC.")
 
-        st.subheader("Ammo Snapshot")
-        st.dataframe(df_ammo_hist.style.format(precision=0), use_container_width=True)
 
+            # Ammo Snapshot
+            if chosen_ts in ts_ammo_hist:
+                df_ammo_hist_snap = pd.read_sql(f"SELECT * FROM {TABLE_AMMO_HISTORY} WHERE ts=?", conn, params=(chosen_ts,))
+                if "ts" in df_ammo_hist_snap.columns: df_ammo_hist_snap.drop(columns="ts", inplace=True)
+                if COL_VEHICLE_ID in df_ammo_hist_snap.columns:
+                     df_ammo_hist_snap[COL_VEHICLE_ID] = clean_id_column(df_ammo_hist_snap[COL_VEHICLE_ID])
+                st.markdown("#### Ammunition Snapshot")
+                st.dataframe(df_ammo_hist_snap.style.format(precision=0), use_container_width=True)
+            else:
+                st.markdown("#### Ammunition Snapshot")
+                st.caption(f"No ammunition data saved at {chosen_ts} UTC.")
+
+
+    # Full Requirements History (not tied to specific snapshot time necessarily, shows all changes)
+    st.markdown("---")
+    st.subheader("All Requirements Changes History")
+    full_req_history_df = pd.read_sql(f"SELECT * FROM {TABLE_REQUIREMENTS_HISTORY} ORDER BY ts DESC, id DESC", conn)
+    if full_req_history_df.empty:
+        st.caption("No requirements changes have been logged.")
+    else:
+        st.dataframe(full_req_history_df, use_container_width=True)
+
+    add_footer()
+
+# ==================== TAB 6: REQUIREMENTS ====================
+with tab_req:
+    st.header("Commander Requirements & Notes")
+
+    # Display current requirements with filters
+    # Ensure req_df is not empty before filtering
+    pluga_unique_req = ["All"] + sorted(req_df[COL_PLUGA].dropna().unique().tolist()) if not req_df.empty else ["All"]
+    z_unique_req = ["All"] + sorted(req_df[COL_Z].dropna().unique().tolist()) if not req_df.empty else ["All"]
+
+    filter_col1, filter_col2 = st.columns(2)
+    selected_pluga_req_filter = filter_col1.selectbox(
+        f"Filter by {COL_PLUGA}", pluga_unique_req, key="req_pluga_filter"
+    )
+    selected_z_req_filter = filter_col2.selectbox(
+        f"Filter by {COL_Z}", z_unique_req, key="req_z_filter"
+    )
+
+    display_req_df = req_df.copy()
+    if selected_pluga_req_filter != "All":
+        display_req_df = display_req_df[display_req_df[COL_PLUGA] == selected_pluga_req_filter]
+    if selected_z_req_filter != "All":
+        display_req_df = display_req_df[display_req_df[COL_Z] == selected_z_req_filter]
+    st.dataframe(display_req_df, use_container_width=True)
+
+    st.markdown("---")
+    st.subheader("Add/Edit Note")
+
+    # Ensure veh_df is not empty for selectbox options
+    pluga_options_notes = sorted(veh_df[COL_PLUGA].dropna().unique().tolist()) if not veh_df.empty else []
+    z_options_notes = sorted(veh_df[COL_SIMON].dropna().unique().tolist()) if not veh_df.empty else []
+
+    if not pluga_options_notes or not z_options_notes:
+        st.warning("Please add vehicle data first to define Pluga and Z options for notes.")
+    else:
+        selected_pluga_for_note = st.selectbox(
+            f"{COL_PLUGA} (for note)", pluga_options_notes, key="req_pluga_select_note"
+        )
+        selected_z_for_note = st.selectbox(
+            f"{COL_Z} (Tank for note)", z_options_notes, key="req_z_select_note"
+        )
+
+        current_note_text = ""
+        # Pre-fill note if it exists for the selected Pluga/Z combination
+        if selected_pluga_for_note and selected_z_for_note and not req_df.empty:
+            match_df = req_df[
+                (req_df[COL_PLUGA] == selected_pluga_for_note) &
+                (req_df[COL_Z] == selected_z_for_note)
+            ]
+            if not match_df.empty:
+                current_note_text = match_df.iloc[0]['commander_note']
+
+        note_text_input = st.text_area(
+            "Commander Note", value=current_note_text, key="req_note_text_area"
+        )
+
+        if st.button("Save Note", key="req_save_note_button"):
+            if not selected_pluga_for_note or not selected_z_for_note:
+                st.error("Pluga and Z must be selected to save a note.")
+            else:
+                now_utc_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+                try:
+                    with conn: # Use context manager for atomic operations
+                        cursor = conn.execute(
+                            f"SELECT id FROM {TABLE_REQUIREMENTS} WHERE {COL_PLUGA}=? AND {COL_Z}=?",
+                            (selected_pluga_for_note, selected_z_for_note)
+                        )
+                        existing_note = cursor.fetchone()
+                        history_update_type = ""
+
+                        if existing_note:
+                            conn.execute(
+                                f"""UPDATE {TABLE_REQUIREMENTS}
+                                    SET commander_note = ?, last_updated = ?
+                                    WHERE {COL_PLUGA} = ? AND {COL_Z} = ?""",
+                                (note_text_input, now_utc_str, selected_pluga_for_note, selected_z_for_note)
+                            )
+                            history_update_type = "Requirement Updated"
+                        else:
+                            conn.execute(
+                                f"""INSERT INTO {TABLE_REQUIREMENTS} ({COL_PLUGA}, {COL_Z}, commander_note, last_updated)
+                                    VALUES (?, ?, ?, ?)""",
+                                (selected_pluga_for_note, selected_z_for_note, note_text_input, now_utc_str)
+                            )
+                            history_update_type = "Requirement Added"
+
+                        conn.execute(
+                            f"""INSERT INTO {TABLE_REQUIREMENTS_HISTORY}
+                                ({COL_PLUGA}, {COL_Z}, commander_note, update_type, updated_at, ts)
+                                VALUES (?, ?, ?, ?, ?, ?)""",
+                            (selected_pluga_for_note, selected_z_for_note, note_text_input,
+                             history_update_type, now_utc_str, now_utc_str)
+                        )
+                    st.success("Note saved successfully!")
+                    st.cache_data.clear() # Clear cache to reload requirements
+                    st.rerun() # Rerun to reflect changes
+                except sqlite3.Error as e:
+                    st.error(f"Database error: {e}")
     add_footer()
