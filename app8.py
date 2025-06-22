@@ -4,6 +4,7 @@ from pathlib import Path
 from datetime import datetime, timezone # Added timezone
 import pandas as pd
 import plotly.express as px # Your version uses this
+import plotly.graph_objects as go
 import io
 
 # ==================== CONSTANTS ====================
@@ -247,6 +248,11 @@ with tab_ammo:
 with tab_summary:
     st.header("Ammunition & 9215 Overview")
 
+    if not req_df.empty:
+        with st.expander("Commander Requirements", expanded=False):
+            req_preview = req_df[[COL_PLUGA, COL_Z, COL_COMMANDER_NOTE]].head(5)
+            st.dataframe(req_preview, use_container_width=True)
+
     # Using constants for ammo standards
     # standards = STANDARDS_AMMO (already defined as constant)
     # triple = TRIPLE_AMMO_TYPES (already defined as constant)
@@ -288,249 +294,267 @@ with tab_summary:
     else:
         show_types = [type_sel] if type_sel and type_sel in all_types_filter else []
 
+    fleet_tab, ammo_tab = st.tabs(["Fleet Status", "Ammo Status"])
 
-    st.subheader("Ammunition Shortage Table")
-    shortage_rows = []
-    shortage_numeric_rows = []
-
-    if not ammo_view.empty:
-        for _, row in ammo_view.iterrows():
-            sid = str(row[COL_VEHICLE_ID]) # Ensure it's a string for matching
-            vmatch = veh_df[veh_df[COL_SIMON] == sid] # Match string ID
-
-            # Safer fetching of pluga/location
-            row_pluga = vmatch.iloc[0][COL_PLUGA] if not vmatch.empty and COL_PLUGA in vmatch.columns else "N/A"
-            row_loc = vmatch.iloc[0][COL_LOCATION] if not vmatch.empty and COL_LOCATION in vmatch.columns else "N/A"
-
-            disp = {"Pluga": row_pluga, "Location": row_loc, "Z": sid}
-            shrt = {"Pluga": row_pluga, "Location": row_loc, "Z": sid}
-
+    with ammo_tab:
+        st.subheader("Ammunition Shortage Table")
+        shortage_rows = []
+        shortage_numeric_rows = []
+    
+        if not ammo_view.empty:
+            for _, row in ammo_view.iterrows():
+                sid = str(row[COL_VEHICLE_ID]) # Ensure it's a string for matching
+                vmatch = veh_df[veh_df[COL_SIMON] == sid] # Match string ID
+    
+                # Safer fetching of pluga/location
+                row_pluga = vmatch.iloc[0][COL_PLUGA] if not vmatch.empty and COL_PLUGA in vmatch.columns else "N/A"
+                row_loc = vmatch.iloc[0][COL_LOCATION] if not vmatch.empty and COL_LOCATION in vmatch.columns else "N/A"
+    
+                disp = {"Pluga": row_pluga, "Location": row_loc, "Z": sid}
+                shrt = {"Pluga": row_pluga, "Location": row_loc, "Z": sid}
+    
+                for c_ammo, std_val in STANDARDS_AMMO.items():
+                    have = float(row.get(c_ammo, 0.0)) # .get for safety, default to 0.0
+                    short = max(std_val - have, 0.0)
+                    disp[c_ammo] = f"{int(have)}({int(short)})" if short > 0 else f"{int(have)}"
+                    shrt[c_ammo] = short
+    
+                triple_val = 0.0
+                tvals = {}
+                for t_ammo in TRIPLE_AMMO_TYPES:
+                    cur = float(row.get(t_ammo, 0.0))
+                    triple_val += cur
+                    tvals[t_ammo] = cur
+                triple_short = max(TRIPLE_AMMO_STANDARD - triple_val, 0.0)
+    
+                for t_ammo in TRIPLE_AMMO_TYPES:
+                    disp[t_ammo] = f"{int(tvals[t_ammo])}({int(triple_short)})" if triple_short > 0 else f"{int(tvals[t_ammo])}"
+                    shrt[t_ammo] = triple_short # Shortage applies to the group
+    
+                combined_triple_name = "Calanit+Halul+Hatzav"
+                if combined_triple_name in (show_types + [combined_triple_name]):
+                    disp[combined_triple_name] = f"{int(triple_val)}({int(triple_short)})" if triple_short > 0 else f"{int(triple_val)}"
+                    shrt[combined_triple_name] = triple_short
+    
+                shortage_rows.append(disp)
+                shortage_numeric_rows.append(shrt)
+    
+        base_cols_summary = ["Pluga", "Location", "Z"]
+        if not shortage_rows:
+            shortage_disp_df = pd.DataFrame(columns=base_cols_summary)
+            shortage_num_df = pd.DataFrame(columns=base_cols_summary)
+        else:
+            shortage_disp_df = pd.DataFrame(shortage_rows)
+            shortage_num_df = pd.DataFrame(shortage_numeric_rows)
+    
+    
+        # Determine final columns to display more robustly
+        final_disp_cols = base_cols_summary[:] # Start with a copy
+        unique_show_types = sorted(list(set(col for col in show_types if col in shortage_disp_df.columns)))
+        final_disp_cols.extend(unique_show_types)
+        if "Calanit+Halul+Hatzav" in shortage_disp_df.columns and \
+           ("Calanit+Halul+Hatzav" not in final_disp_cols) and \
+           (type_sel == "All" or type_sel == "Calanit+Halul+Hatzav"):
+            final_disp_cols.append("Calanit+Halul+Hatzav")
+    
+        # Ensure columns exist before trying to select them
+        final_disp_cols = [col for col in final_disp_cols if col in shortage_disp_df.columns]
+        if not final_disp_cols and not shortage_disp_df.empty: # If somehow all dynamic cols are gone, show base
+            final_disp_cols = [col for col in base_cols_summary if col in shortage_disp_df.columns]
+    
+    
+        shortage_disp_df = shortage_disp_df[final_disp_cols] if final_disp_cols and not shortage_disp_df.empty else pd.DataFrame(columns=base_cols_summary)
+        # Ensure shortage_num_df has same columns as shortage_disp_df for styling
+        shortage_num_df = shortage_num_df[final_disp_cols] if final_disp_cols and not shortage_num_df.empty else pd.DataFrame(columns=base_cols_summary)
+    
+    
+        if not shortage_disp_df.empty:
+            st.markdown(
+                "<span style='display:inline-block; width:18px; height:18px; background:#d4f8d4;border:1px solid #999;'></span> **Meets standard** &nbsp;&nbsp;"
+                "<span style='display:inline-block; width:18px; height:18px; background:#ffb3b3;border:1px solid #999;'></span> **Below standard**",
+                unsafe_allow_html=True
+            )
+            def highlight_shortage_summary(data_df_to_style): # Renamed to avoid conflict
+                style_df = pd.DataFrame('', index=data_df_to_style.index, columns=data_df_to_style.columns)
+                if shortage_num_df.empty or data_df_to_style.empty:
+                     return style_df
+                for col_name in data_df_to_style.columns:
+                    if col_name not in base_cols_summary and col_name in shortage_num_df.columns:
+                        for idx in data_df_to_style.index:
+                            if idx in shortage_num_df.index:
+                                short_val = shortage_num_df.loc[idx, col_name]
+                                try:
+                                    if float(short_val) > 0:
+                                        style_df.loc[idx, col_name] = 'background-color: #ffb3b3'
+                                    else:
+                                        style_df.loc[idx, col_name] = 'background-color: #d4f8d4'
+                                except (ValueError, TypeError): pass
+                return style_df
+            sty = shortage_disp_df.style.apply(highlight_shortage_summary, axis=None)
+            st.dataframe(sty, use_container_width=True)
+        else:
+            st.info("No shortage data to display for the current filters.")
+    
+        # ... (Rest of your Summary Tab: Quick shortage %, Totals vs Standards, Vehicles Condition, Download) ...
+        # This part of your summary tab is quite extensive. I'll keep it as is from your stable version
+        # and just ensure variable names and constants are aligned if needed.
+    
+        # ============ 4. Quick shortage percentage table ============
+        st.markdown("---")
+        st.subheader("Quick Overview of Shortage in % by Ammo Type")
+    
+        n_tanks_summary_view = len(veh_view) # Use veh_view which is filtered for this section
+        if n_tanks_summary_view > 0 and not ammo_view.empty:
+            summary_data = []
             for c_ammo, std_val in STANDARDS_AMMO.items():
-                have = float(row.get(c_ammo, 0.0)) # .get for safety, default to 0.0
-                short = max(std_val - have, 0.0)
-                disp[c_ammo] = f"{int(have)}({int(short)})" if short > 0 else f"{int(have)}"
-                shrt[c_ammo] = short
-
-            triple_val = 0.0
-            tvals = {}
+                col_current = ammo_view[c_ammo].sum() # Already numeric due to load_data
+                col_need = std_val * n_tanks_summary_view
+                col_short = max(col_need - col_current, 0)
+                short_percent = 0 if col_need == 0 else (col_short / col_need) * 100
+                summary_data.append({
+                    "Type": c_ammo, "Current": int(col_current), "Standard": int(col_need),
+                    "Shortage": int(col_short), "Shortage%": f"{short_percent:.1f}%"
+                })
+    
+            sum_triple_current = 0
             for t_ammo in TRIPLE_AMMO_TYPES:
-                cur = float(row.get(t_ammo, 0.0))
-                triple_val += cur
-                tvals[t_ammo] = cur
-            triple_short = max(TRIPLE_AMMO_STANDARD - triple_val, 0.0)
-
-            for t_ammo in TRIPLE_AMMO_TYPES:
-                disp[t_ammo] = f"{int(tvals[t_ammo])}({int(triple_short)})" if triple_short > 0 else f"{int(tvals[t_ammo])}"
-                shrt[t_ammo] = triple_short # Shortage applies to the group
-
-            combined_triple_name = "Calanit+Halul+Hatzav"
-            if combined_triple_name in (show_types + [combined_triple_name]):
-                disp[combined_triple_name] = f"{int(triple_val)}({int(triple_short)})" if triple_short > 0 else f"{int(triple_val)}"
-                shrt[combined_triple_name] = triple_short
-
-            shortage_rows.append(disp)
-            shortage_numeric_rows.append(shrt)
-
-    base_cols_summary = ["Pluga", "Location", "Z"]
-    if not shortage_rows:
-        shortage_disp_df = pd.DataFrame(columns=base_cols_summary)
-        shortage_num_df = pd.DataFrame(columns=base_cols_summary)
-    else:
-        shortage_disp_df = pd.DataFrame(shortage_rows)
-        shortage_num_df = pd.DataFrame(shortage_numeric_rows)
-
-
-    # Determine final columns to display more robustly
-    final_disp_cols = base_cols_summary[:] # Start with a copy
-    unique_show_types = sorted(list(set(col for col in show_types if col in shortage_disp_df.columns)))
-    final_disp_cols.extend(unique_show_types)
-    if "Calanit+Halul+Hatzav" in shortage_disp_df.columns and \
-       ("Calanit+Halul+Hatzav" not in final_disp_cols) and \
-       (type_sel == "All" or type_sel == "Calanit+Halul+Hatzav"):
-        final_disp_cols.append("Calanit+Halul+Hatzav")
-
-    # Ensure columns exist before trying to select them
-    final_disp_cols = [col for col in final_disp_cols if col in shortage_disp_df.columns]
-    if not final_disp_cols and not shortage_disp_df.empty: # If somehow all dynamic cols are gone, show base
-        final_disp_cols = [col for col in base_cols_summary if col in shortage_disp_df.columns]
-
-
-    shortage_disp_df = shortage_disp_df[final_disp_cols] if final_disp_cols and not shortage_disp_df.empty else pd.DataFrame(columns=base_cols_summary)
-    # Ensure shortage_num_df has same columns as shortage_disp_df for styling
-    shortage_num_df = shortage_num_df[final_disp_cols] if final_disp_cols and not shortage_num_df.empty else pd.DataFrame(columns=base_cols_summary)
-
-
-    if not shortage_disp_df.empty:
-        st.markdown(
-            "<span style='display:inline-block; width:18px; height:18px; background:#d4f8d4;border:1px solid #999;'></span> **Meets standard** &nbsp;&nbsp;"
-            "<span style='display:inline-block; width:18px; height:18px; background:#ffb3b3;border:1px solid #999;'></span> **Below standard**",
-            unsafe_allow_html=True
-        )
-        def highlight_shortage_summary(data_df_to_style): # Renamed to avoid conflict
-            style_df = pd.DataFrame('', index=data_df_to_style.index, columns=data_df_to_style.columns)
-            if shortage_num_df.empty or data_df_to_style.empty:
-                 return style_df
-            for col_name in data_df_to_style.columns:
-                if col_name not in base_cols_summary and col_name in shortage_num_df.columns:
-                    for idx in data_df_to_style.index:
-                        if idx in shortage_num_df.index:
-                            short_val = shortage_num_df.loc[idx, col_name]
-                            try:
-                                if float(short_val) > 0:
-                                    style_df.loc[idx, col_name] = 'background-color: #ffb3b3'
-                                else:
-                                    style_df.loc[idx, col_name] = 'background-color: #d4f8d4'
-                            except (ValueError, TypeError): pass
-            return style_df
-        sty = shortage_disp_df.style.apply(highlight_shortage_summary, axis=None)
-        st.dataframe(sty, use_container_width=True)
-    else:
-        st.info("No shortage data to display for the current filters.")
-
-    # ... (Rest of your Summary Tab: Quick shortage %, Totals vs Standards, Vehicles Condition, Download) ...
-    # This part of your summary tab is quite extensive. I'll keep it as is from your stable version
-    # and just ensure variable names and constants are aligned if needed.
-
-    # ============ 4. Quick shortage percentage table ============
-    st.markdown("---")
-    st.subheader("Quick Overview of Shortage in % by Ammo Type")
-
-    n_tanks_summary_view = len(veh_view) # Use veh_view which is filtered for this section
-    if n_tanks_summary_view > 0 and not ammo_view.empty:
-        summary_data = []
-        for c_ammo, std_val in STANDARDS_AMMO.items():
-            col_current = ammo_view[c_ammo].sum() # Already numeric due to load_data
-            col_need = std_val * n_tanks_summary_view
-            col_short = max(col_need - col_current, 0)
-            short_percent = 0 if col_need == 0 else (col_short / col_need) * 100
+                sum_triple_current += ammo_view[t_ammo].sum()
+            need_triple = TRIPLE_AMMO_STANDARD * n_tanks_summary_view
+            short_triple = max(need_triple - sum_triple_current, 0)
+            shortp_triple = 0 if need_triple == 0 else (short_triple / need_triple) * 100
             summary_data.append({
-                "Type": c_ammo, "Current": int(col_current), "Standard": int(col_need),
-                "Shortage": int(col_short), "Shortage%": f"{short_percent:.1f}%"
+                "Type": "Calanit+Halul+Hatzav", "Current": int(sum_triple_current),
+                "Standard": int(need_triple), "Shortage": int(short_triple),
+                "Shortage%": f"{shortp_triple:.1f}%"
             })
+            short_summary_df = pd.DataFrame(summary_data)
+            st.dataframe(short_summary_df.style.format(precision=0, formatter={"Shortage%": "{}"}), use_container_width=True)
 
-        sum_triple_current = 0
-        for t_ammo in TRIPLE_AMMO_TYPES:
-            sum_triple_current += ammo_view[t_ammo].sum()
-        need_triple = TRIPLE_AMMO_STANDARD * n_tanks_summary_view
-        short_triple = max(need_triple - sum_triple_current, 0)
-        shortp_triple = 0 if need_triple == 0 else (short_triple / need_triple) * 100
-        summary_data.append({
-            "Type": "Calanit+Halul+Hatzav", "Current": int(sum_triple_current),
-            "Standard": int(need_triple), "Shortage": int(short_triple),
-            "Shortage%": f"{shortp_triple:.1f}%"
-        })
-        short_summary_df = pd.DataFrame(summary_data)
-        st.dataframe(short_summary_df.style.format(precision=0, formatter={"Shortage%": "{}"}), use_container_width=True)
-    else:
-        st.info("No tanks or ammo data in the current filter to compute shortage %.")
-
-    # ============ 5. 9215 Totals vs. Standards (bar chart) ============
-    st.markdown("---")
-    st.subheader("Overall Totals vs. Standards (Based on Filter)")
-
-    if n_tanks_summary_view > 0 and not ammo_view.empty:
-        cur_map = {}
-        for c_ammo in STANDARDS_AMMO:
-            cur_map[c_ammo] = ammo_view[c_ammo].sum()
-        total_triple_current = sum(ammo_view[t_ammo].sum() for t_ammo in TRIPLE_AMMO_TYPES)
-        cur_map["Calanit+Halul+Hatzav"] = total_triple_current
-
-        std_map = {c_ammo: val * n_tanks_summary_view for c_ammo, val in STANDARDS_AMMO.items()}
-        std_map["Calanit+Halul+Hatzav"] = TRIPLE_AMMO_STANDARD * n_tanks_summary_view
-
-        chart_cur, chart_std = {}, {}
-        for k_ammo in cur_map:
-            if k_ammo == "regular_556":
-                new_k_ammo = "regular_556 (x1000)"
-                chart_cur[new_k_ammo] = cur_map[k_ammo] / 1000.0
-                chart_std[new_k_ammo] = std_map[k_ammo] / 1000.0
-            else:
-                chart_cur[k_ammo] = cur_map[k_ammo]
-                chart_std[k_ammo] = std_map[k_ammo]
-        chart_df = pd.DataFrame({
-            "Ammo Type": list(chart_cur.keys()),
-            "Current": list(chart_cur.values()),
-            "Standard": [chart_std[x] for x in chart_cur.keys()] # Ensure order
-        })
-        fig_batt = px.bar(chart_df, x="Ammo Type", y=["Current", "Standard"], barmode="group", title="Totals: Current vs Standard (Based on Filter)")
-        st.plotly_chart(fig_batt, use_container_width=True)
-    else:
-        st.info("No data to aggregate for bar chart (zero tanks or no ammo data match your filters).")
+            gauge_cols = st.columns(3)
+            i = 0
+            for ammo_type in STANDARDS_AMMO.keys():
+                if ammo_type in ammo_view.columns:
+                    current = ammo_view[ammo_type].sum()
+                    need = STANDARDS_AMMO[ammo_type] * n_tanks_summary_view
+                    pct = 0 if need == 0 else (current / need) * 100
+                    fig = go.Figure(go.Indicator(mode="gauge+number", value=pct,
+                                 gauge={"axis": {"range": [0, 100]}},
+                                 title={"text": ammo_type}))
+                    gauge_cols[i % 3].plotly_chart(fig, use_container_width=True)
+                    i += 1
+        else:
+            st.info("No tanks or ammo data in the current filter to compute shortage %.")
+    
+        # ============ 5. 9215 Totals vs. Standards (bar chart) ============
+        st.markdown("---")
+        st.subheader("Overall Totals vs. Standards (Based on Filter)")
+    
+        if n_tanks_summary_view > 0 and not ammo_view.empty:
+            cur_map = {}
+            for c_ammo in STANDARDS_AMMO:
+                cur_map[c_ammo] = ammo_view[c_ammo].sum()
+            total_triple_current = sum(ammo_view[t_ammo].sum() for t_ammo in TRIPLE_AMMO_TYPES)
+            cur_map["Calanit+Halul+Hatzav"] = total_triple_current
+    
+            std_map = {c_ammo: val * n_tanks_summary_view for c_ammo, val in STANDARDS_AMMO.items()}
+            std_map["Calanit+Halul+Hatzav"] = TRIPLE_AMMO_STANDARD * n_tanks_summary_view
+    
+            chart_cur, chart_std = {}, {}
+            for k_ammo in cur_map:
+                if k_ammo == "regular_556":
+                    new_k_ammo = "regular_556 (x1000)"
+                    chart_cur[new_k_ammo] = cur_map[k_ammo] / 1000.0
+                    chart_std[new_k_ammo] = std_map[k_ammo] / 1000.0
+                else:
+                    chart_cur[k_ammo] = cur_map[k_ammo]
+                    chart_std[k_ammo] = std_map[k_ammo]
+            chart_df = pd.DataFrame({
+                "Ammo Type": list(chart_cur.keys()),
+                "Current": list(chart_cur.values()),
+                "Standard": [chart_std[x] for x in chart_cur.keys()] # Ensure order
+            })
+            fig_batt = px.bar(chart_df, x="Ammo Type", y=["Current", "Standard"], barmode="group", title="Totals: Current vs Standard (Based on Filter)")
+            st.plotly_chart(fig_batt, use_container_width=True)
+        else:
+            st.info("No data to aggregate for bar chart (zero tanks or no ammo data match your filters).")
 
     # ============ 6. Vehicles Condition Table ============
-    st.markdown("---")
-    st.subheader("Vehicles Condition Table")
-
-    # Robust unique value fetching for vehicle condition filters
-    all_veh_types_filter = ["All"] + sorted(list(set(str(x) for x in veh_df[COL_VEHICLE_TYPE] if pd.notna(x) and str(x).strip() != ""))) if not veh_df.empty and COL_VEHICLE_TYPE in veh_df.columns else ["All"]
-
-    col_loc_v, col_pluga_v, col_vtype_v = st.columns(3)
-    loc_v_sel = col_loc_v.selectbox("Location (Vehicles)", all_locs, key="v_cond_loc_filter") # all_locs from ammo section is fine
-    pluga_v_sel = col_pluga_v.selectbox("Pluga (Vehicles)", all_plugas, key="v_cond_pluga_filter") # all_plugas from ammo section
-    vtype_v_sel = col_vtype_v.selectbox("Vehicle Type", all_veh_types_filter, key="v_cond_vtype_filter")
-
-    vehicle_condition_view_df = veh_df.copy()
-    if loc_v_sel != "All":
-        vehicle_condition_view_df = vehicle_condition_view_df[vehicle_condition_view_df[COL_LOCATION] == loc_v_sel]
-    if pluga_v_sel != "All":
-        vehicle_condition_view_df = vehicle_condition_view_df[vehicle_condition_view_df[COL_PLUGA] == pluga_v_sel]
-    if vtype_v_sel != "All" and COL_VEHICLE_TYPE in vehicle_condition_view_df.columns:
-        vehicle_condition_view_df = vehicle_condition_view_df[vehicle_condition_view_df[COL_VEHICLE_TYPE] == vtype_v_sel]
-
-    def highlight_vehicle_status_summary(row_series): # Renamed
-        status_val = str(row_series.get(COL_STATUS, "")).strip().lower()
-        if status_val == "working": return "background-color: #d4f8d4" # Light Green
-        elif status_val == "not working": return "background-color: #ffb3b3" # Light Red
-        return ""
-
-    if not vehicle_condition_view_df.empty:
-        sty_veh_cond = vehicle_condition_view_df.style.apply(
-            lambda s_row: [highlight_vehicle_status_summary(s_row) if col_name == COL_STATUS else "" for col_name in s_row.index],
-            axis=1
-        )
-        st.dataframe(sty_veh_cond.format(precision=0), use_container_width=True)
-    else:
-        st.info("No vehicles match these filters for condition table.")
-
-    st.subheader("Quick Overview of Working / Not Working by Vehicle Type (Based on Filter)")
-    if COL_VEHICLE_TYPE in veh_df.columns: # Check if column exists in original df
-        if not vehicle_condition_view_df.empty: # Use the filtered df
-            summary_veh_status_rows = []
-            for vt_val in vehicle_condition_view_df[COL_VEHICLE_TYPE].unique():
-                sub_df_status = vehicle_condition_view_df[vehicle_condition_view_df[COL_VEHICLE_TYPE] == vt_val]
-                working_count = sub_df_status[COL_STATUS].str.lower().eq("working").sum()
-                not_working_count = sub_df_status[COL_STATUS].str.lower().eq("not working").sum()
-                summary_veh_status_rows.append({
-                    "Vehicle Type": vt_val, "Working": working_count,
-                    "Not Working": not_working_count, "Total": len(sub_df_status)
-                })
-            sum_df_status = pd.DataFrame(summary_veh_status_rows)
-            st.dataframe(sum_df_status.style.format(precision=0), use_container_width=True)
+    with fleet_tab:
+        st.markdown("---")
+        st.subheader("Vehicles Condition Table")
+        
+        # Robust unique value fetching for vehicle condition filters
+        all_veh_types_filter = ["All"] + sorted(list(set(str(x) for x in veh_df[COL_VEHICLE_TYPE] if pd.notna(x) and str(x).strip() != ""))) if not veh_df.empty and COL_VEHICLE_TYPE in veh_df.columns else ["All"]
+        
+        col_loc_v, col_pluga_v, col_vtype_v = st.columns(3)
+        loc_v_sel = col_loc_v.selectbox("Location (Vehicles)", all_locs, key="v_cond_loc_filter") # all_locs from ammo section is fine
+        pluga_v_sel = col_pluga_v.selectbox("Pluga (Vehicles)", all_plugas, key="v_cond_pluga_filter") # all_plugas from ammo section
+        vtype_v_sel = col_vtype_v.selectbox("Vehicle Type", all_veh_types_filter, key="v_cond_vtype_filter")
+        
+        vehicle_condition_view_df = veh_df.copy()
+        if loc_v_sel != "All":
+            vehicle_condition_view_df = vehicle_condition_view_df[vehicle_condition_view_df[COL_LOCATION] == loc_v_sel]
+        if pluga_v_sel != "All":
+            vehicle_condition_view_df = vehicle_condition_view_df[vehicle_condition_view_df[COL_PLUGA] == pluga_v_sel]
+        if vtype_v_sel != "All" and COL_VEHICLE_TYPE in vehicle_condition_view_df.columns:
+            vehicle_condition_view_df = vehicle_condition_view_df[vehicle_condition_view_df[COL_VEHICLE_TYPE] == vtype_v_sel]
+        
+        def highlight_vehicle_status_summary(row_series): # Renamed
+            status_val = str(row_series.get(COL_STATUS, "")).strip().lower()
+            if status_val == "working": return "background-color: #d4f8d4" # Light Green
+            elif status_val == "not working": return "background-color: #ffb3b3" # Light Red
+            return ""
+        
+        if not vehicle_condition_view_df.empty:
+            sty_veh_cond = vehicle_condition_view_df.style.apply(
+                lambda s_row: [highlight_vehicle_status_summary(s_row) if col_name == COL_STATUS else "" for col_name in s_row.index],
+                axis=1
+            )
+            st.dataframe(sty_veh_cond.format(precision=0), use_container_width=True)
         else:
-            st.write("No vehicles to summarize status in the current filter.")
-    else:
-        st.info(f"'{COL_VEHICLE_TYPE}' column not found in vehicles table.")
+            st.info("No vehicles match these filters for condition table.")
+        
+        st.subheader("Quick Overview of Working / Not Working by Vehicle Type (Based on Filter)")
+        if COL_VEHICLE_TYPE in veh_df.columns:  # Check if column exists in original df
+            if not vehicle_condition_view_df.empty:  # Use the filtered df
+                summary_veh_status_rows = []
+                for vt_val in vehicle_condition_view_df[COL_VEHICLE_TYPE].unique():
+                    sub_df_status = vehicle_condition_view_df[vehicle_condition_view_df[COL_VEHICLE_TYPE] == vt_val]
+                    working_count = sub_df_status[COL_STATUS].str.lower().eq("working").sum()
+                    not_working_count = sub_df_status[COL_STATUS].str.lower().eq("not working").sum()
+                    summary_veh_status_rows.append({
+                        "Vehicle Type": vt_val,
+                        "Working": working_count,
+                        "Not Working": not_working_count,
+                        "Total": len(sub_df_status),
+                    })
+                sum_df_status = pd.DataFrame(summary_veh_status_rows)
+                st.dataframe(sum_df_status.style.format(precision=0), use_container_width=True)
+            else:
+                st.write("No vehicles to summarize status in the current filter.")
+        else:
+            st.info(f"'{COL_VEHICLE_TYPE}' column not found in vehicles table.")
 
     # ============ 7. Download shortage ============
-    st.markdown("---")
-    st.subheader("Download Ammo Shortage to Excel")
-    if not shortage_disp_df.empty: # Use the main shortage_disp_df from earlier in this tab
-        buffer = io.BytesIO()
-        # Use try-except for Excel writing
-        try:
-            with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
-                shortage_disp_df.to_excel(writer, sheet_name="ShortageData", index=False)
-            # writer.close() is handled by with pd.ExcelWriter
-            st.download_button(
-                label="Download Shortage as Excel", data=buffer.getvalue(),
-                file_name="ammo_shortage_report.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="download_shortage_button"
-            )
-        except Exception as e:
-            st.error(f"Could not generate Excel file: {e}")
-    else:
-        st.info("No shortage data to download based on current filters.")
+    with ammo_tab:
+        st.markdown("---")
+        st.subheader("Download Ammo Shortage to Excel")
+        if not shortage_disp_df.empty:  # Use the main shortage_disp_df from earlier in this tab
+            buffer = io.BytesIO()
+            # Use try-except for Excel writing
+            try:
+                with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+                    shortage_disp_df.to_excel(writer, sheet_name="ShortageData", index=False)
+                st.download_button(
+                    label="Download Shortage as Excel", data=buffer.getvalue(),
+                    file_name="ammo_shortage_report.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="download_shortage_button"
+                )
+            except Exception as e:
+                st.error(f"Could not generate Excel file: {e}")
+        else:
+            st.info("No shortage data to download based on current filters.")
     add_footer()
 
 
